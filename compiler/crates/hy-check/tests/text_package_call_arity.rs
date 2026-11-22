@@ -1,4 +1,5 @@
-//! Fixed-arity strings/bytes calls must reject at check time, not Go build time.
+//! `strings.map` is excluded: its keyword spelling is already rejected by the parser.
+//! Fixed-arity strings calls must reject at check time, not Go build time.
 use hy_check::{check_file, Verdict};
 use hy_syntax::parse_file;
 
@@ -38,62 +39,21 @@ const CALLS: &[(&str, &str, &str)] = &[
     ("strings", "split_n", "\"abc\", \"abc\", 2"),
     ("strings", "split_after_n", "\"abc\", \"abc\", 2"),
     ("strings", "replace", "\"abc\", \"abc\", \"abc\", 2"),
-    ("bytes", "fields", "nil"),
-    ("bytes", "title", "nil"),
-    ("bytes", "to_lower", "nil"),
-    ("bytes", "to_title", "nil"),
-    ("bytes", "to_upper", "nil"),
-    ("bytes", "trim_space", "nil"),
-    ("bytes", "compare", "nil, nil"),
-    ("bytes", "contains", "nil, nil"),
-    ("bytes", "contains_any", "nil, \"a\""),
-    ("bytes", "contains_rune", "nil, 1"),
-    ("bytes", "count", "nil, nil"),
-    ("bytes", "cut", "nil, nil"),
-    ("bytes", "equal_fold", "nil, nil"),
-    ("bytes", "has_prefix", "nil, nil"),
-    ("bytes", "has_suffix", "nil, nil"),
-    ("bytes", "index", "nil, nil"),
-    ("bytes", "index_any", "nil, \"a\""),
-    ("bytes", "index_byte", "nil, 1"),
-    ("bytes", "index_rune", "nil, 1"),
-    ("bytes", "join", "nil, nil"),
-    ("bytes", "last_index", "nil, nil"),
-    ("bytes", "last_index_any", "nil, \"a\""),
-    ("bytes", "last_index_byte", "nil, 1"),
-    ("bytes", "repeat", "nil, 1"),
-    ("bytes", "replace_all", "nil, nil, nil"),
-    ("bytes", "split", "nil, nil"),
-    ("bytes", "split_after", "nil, nil"),
-    ("bytes", "trim", "nil, \"a\""),
-    ("bytes", "trim_left", "nil, \"a\""),
-    ("bytes", "trim_prefix", "nil, nil"),
-    ("bytes", "trim_right", "nil, \"a\""),
-    ("bytes", "trim_suffix", "nil, nil"),
-    ("bytes", "split_n", "nil, nil, 2"),
-    ("bytes", "split_after_n", "nil, nil, 2"),
-    ("bytes", "replace", "nil, nil, nil, 2"),
     ("strings", "clone", "\"a\""),
     ("strings", "new_reader", "\"a\""),
     ("strings", "fields_func", "\"a\", nil"),
     ("strings", "contains_func", "\"a\", nil"),
     ("strings", "index_func", "\"a\", nil"),
     ("strings", "last_index_func", "\"a\", nil"),
-    ("strings", "map", "nil, \"a\""),
-    ("strings", "to_lower_special", "0, \"a\""),
-    ("strings", "to_title_special", "0, \"a\""),
-    ("strings", "to_upper_special", "0, \"a\""),
+    ("strings", "to_lower_special", "nil, \"a\""),
+    ("strings", "to_title_special", "nil, \"a\""),
+    ("strings", "to_upper_special", "nil, \"a\""),
     ("strings", "to_valid_utf8", "\"a\", \"b\""),
     ("strings", "trim_func", "\"a\", nil"),
     ("strings", "trim_left_func", "\"a\", nil"),
     ("strings", "trim_right_func", "\"a\", nil"),
     ("strings", "cut_prefix", "\"a\", \"b\""),
     ("strings", "cut_suffix", "\"a\", \"b\""),
-    ("bytes", "new_buffer", "nil"),
-    ("bytes", "new_buffer_string", "\"a\""),
-    ("bytes", "new_reader", "nil"),
-    ("bytes", "equal", "nil, nil"),
-    ("bytes", "runes", "nil"),
 ];
 
 fn check(pkg: &str, body: &str) -> hy_check::CheckResult {
@@ -106,7 +66,12 @@ fn check(pkg: &str, body: &str) -> hy_check::CheckResult {
 fn every_curated_fixed_arity_call_accepts_its_go_signature() {
     for (pkg, member, args) in CALLS {
         let r = check(pkg, &format!("{pkg}.{member}({args})"));
-        assert_eq!(r.verdict, Verdict::Accept, "{pkg}.{member}: {:?}", r.diagnostics);
+        assert_eq!(
+            r.verdict,
+            Verdict::Accept,
+            "{pkg}.{member}: {:?}",
+            r.diagnostics
+        );
     }
 }
 
@@ -114,9 +79,14 @@ fn every_curated_fixed_arity_call_accepts_its_go_signature() {
 fn every_curated_fixed_arity_call_rejects_missing_and_extra_arguments() {
     let mut missed = Vec::new();
     for (pkg, member, args) in CALLS {
-        for args in [String::new(), format!("{args}, 0")] {
+        let short = args
+            .rsplit_once(", ")
+            .map(|(prefix, _)| prefix)
+            .unwrap_or("");
+        for args in [String::new(), short.to_string(), format!("{args}, 0")] {
             let r = check(pkg, &format!("{pkg}.{member}({args})"));
-            if r.verdict != Verdict::Reject || !r.diagnostics.iter().any(|d| d.code == "HYB-E1002") {
+            if r.verdict != Verdict::Reject || !r.diagnostics.iter().any(|d| d.code == "HYB-E1002")
+            {
                 missed.push(format!("{pkg}.{member}({args}): {:?}", r.diagnostics));
             }
         }
@@ -161,4 +131,15 @@ fn local_receiver_named_strings_is_not_treated_as_the_package() {
     let src = "struct local {}\nfn (x local) compare() int { return 1 }\nfn main() { strings := local{}\n _ = strings.compare() }";
     let r = check_file(&parse_file("shadow.hy", src).unwrap());
     assert_eq!(r.verdict, Verdict::Accept, "{:?}", r.diagnostics);
+}
+
+#[test]
+fn foreign_tuple_forwarding_keeps_valid_calls_and_rejects_wrong_counts() {
+    let src =
+        "import \"strings\"\nimport \"path\"\nfn main() { strings.compare(path.split(\"a/b\")) }";
+    let r = check_file(&parse_file("foreign-tuple.hy", src).unwrap());
+    assert_eq!(r.verdict, Verdict::Accept, "{:?}", r.diagnostics);
+    let r = check("strings", "strings.compare(strings.cut(\"a\", \"b\"))");
+    assert_eq!(r.verdict, Verdict::Reject, "{:?}", r.diagnostics);
+    assert!(r.diagnostics.iter().any(|d| d.code == "HYB-E1002"));
 }

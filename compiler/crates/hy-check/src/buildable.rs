@@ -4374,6 +4374,43 @@ impl<'a> Collector<'a> {
     }
 
 
+    /// The curated strings functions lower to fixed Go signatures, except
+    /// NewReplacer, whose variadic argument list is deliberately left alone.
+    /// Count a sole multi-result argument by its results, as Go does.
+    fn check_strings_package_call(&mut self, member: &str, args: &[CallArg], span: Span) {
+        let expected = match member {
+            "fields" | "title" | "to_lower" | "to_title" | "to_upper" | "trim_space" | "clone"
+            | "new_reader" => 1,
+            "compare" | "contains" | "contains_any" | "contains_rune" | "count" | "cut"
+            | "equal_fold" | "has_prefix" | "has_suffix" | "index" | "index_any" | "index_byte"
+            | "index_rune" | "join" | "last_index" | "last_index_any" | "last_index_byte"
+            | "repeat" | "split" | "split_after" | "trim" | "trim_left" | "trim_prefix"
+            | "trim_right" | "trim_suffix" | "fields_func" | "contains_func" | "index_func"
+            | "last_index_func" | "to_lower_special" | "to_title_special" | "to_upper_special"
+            | "to_valid_utf8" | "trim_func" | "trim_left_func" | "trim_right_func"
+            | "cut_prefix" | "cut_suffix" => 2,
+            "replace_all" | "split_n" | "split_after_n" => 3,
+            "replace" => 4,
+            _ => return,
+        };
+        if args.iter().any(|a| a.spread) {
+            self.emit_e1002(
+                span,
+                format!("cannot use `...` in call to non-variadic `strings.{member}` (HYB-E1002)"),
+                &format!("`strings.{member}` does not accept variadic spread arguments"),
+            );
+            return;
+        }
+        let got = self.multi_value_arg_count(args).unwrap_or(args.len());
+        if got != expected {
+            self.emit_e1002(
+                span,
+                format!("`strings.{member}` takes {expected} argument{}, got {got} (HYB-E1002)", if expected == 1 { "" } else { "s" }),
+                "match the Go function signature; a sole multi-value call expands to one argument per result",
+            );
+        }
+    }
+
     fn check_filepath_package_call(&mut self, member: &str, args: &[CallArg], span: Span) {
         if matches!(
             member,
@@ -8396,6 +8433,9 @@ impl<'a> Collector<'a> {
                         }
                     }
 
+                    if pkg == "strings" && self.lookup_kind(pkg).is_none() {
+                        self.check_strings_package_call(name.as_str(), args, span);
+                    }
                     if pkg == "filepath" && self.lookup_kind(pkg).is_none() {
                         self.check_filepath_package_call(name.as_str(), args, span);
                     }
